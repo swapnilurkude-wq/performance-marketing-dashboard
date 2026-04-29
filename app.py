@@ -772,6 +772,33 @@ def render_trend_matrix(df, tab_key):
             daily["Impressions"] / daily["Reach"].replace(0, np.nan)
         ).round(2)
 
+    # ── Date filter ───────────────────────────────────────────────────────────
+    date_min = daily["Day"].min().date()
+    date_max = daily["Day"].max().date()
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        start_date = st.date_input(
+            "📅 Start Date", value=date_min,
+            min_value=date_min, max_value=date_max,
+            key=f"tm_start_{tab_key}",
+        )
+    with dc2:
+        end_date = st.date_input(
+            "📅 End Date", value=date_max,
+            min_value=date_min, max_value=date_max,
+            key=f"tm_end_{tab_key}",
+        )
+    if start_date > end_date:
+        st.warning("Start date cannot be after end date.")
+        return
+    daily = daily[
+        (daily["Day"].dt.date >= start_date) &
+        (daily["Day"].dt.date <= end_date)
+    ]
+    if daily.empty:
+        st.info("No data for the selected date range.")
+        return
+
     # Day-over-day % change
     for col in ["Spend", "Impressions", "CPM", "Clicks", "Frequency", "CTR", "CPC", "Leads", "CPL"]:
         if col in daily.columns:
@@ -830,6 +857,30 @@ def render_trend_matrix(df, tab_key):
         ("Leads",          "RdYlGn"),   ("Δ Leads",          "RdYlGn"),
         ("CPL",            "RdYlGn_r"), ("Δ CPL",            "RdYlGn_r"),
     ]
+
+    # ── Column filter (below table) ──────────────────────────────────────────
+    metric_options = [c for c in [
+        "Spend", "Impressions", "CPM", "Clicks",
+        "Ad Frequency", "CTR (%)", "CPC", "Leads", "CPL",
+    ] if c in matrix.columns]
+
+    selected_metrics = st.multiselect(
+        "📊 Columns dikhao",
+        options=metric_options,
+        default=metric_options,
+        key=f"tm_cols_{tab_key}",
+    )
+
+    if selected_metrics:
+        keep_cols = ["Date"]
+        for m in selected_metrics:
+            keep_cols.append(m)
+            delta = f"Δ {m}" if f"Δ {m}" in matrix.columns else None
+            if delta:
+                keep_cols.append(delta)
+        matrix = matrix[[c for c in keep_cols if c in matrix.columns]]
+        fmt    = {k: v for k, v in fmt.items() if k in matrix.columns}
+        gradient_cfg = [(c, cm) for c, cm in gradient_cfg if c in matrix.columns]
 
     styled = matrix.style.format(fmt, na_rep="—")
     for col, cmap in gradient_cfg:
