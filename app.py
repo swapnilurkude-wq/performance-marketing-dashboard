@@ -1,4 +1,4 @@
-import os
+﻿import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -865,7 +865,7 @@ def render_trend_matrix(df, tab_key):
     ] if c in matrix.columns]
 
     selected_metrics = st.multiselect(
-        "📊 Columns dikhao",
+        "📊 Select columns",
         options=metric_options,
         default=metric_options,
         key=f"tm_cols_{tab_key}",
