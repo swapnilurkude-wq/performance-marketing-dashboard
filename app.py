@@ -1,9 +1,11 @@
 ﻿import os
+import datetime
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+from streamlit_autorefresh import st_autorefresh
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 META_SHEET_URL = (
@@ -350,7 +352,7 @@ def render_charts(df):
 
     # Daily spend bar chart
     with col2:
-        st.markdown('<p class="section-header">📊 Daily Spend</p>', unsafe_allow_html=True)
+        st.markdown('<p class="section-header">📊 Day Spend</p>', unsafe_allow_html=True)
         spend_daily = df.groupby("Day")["Spends"].sum().reset_index()
         fig_spend = px.bar(
             spend_daily, x="Day", y="Spends",
@@ -707,11 +709,12 @@ def render_data_table(df, tab_key):
     )
 
 
-# ── Day-by-day trend matrix ───────────────────────────────────────────────────
+# ── Day-by-day data matrix ────────────────────────────────────────────────────
 
 def render_trend_matrix(df, tab_key):
-    st.markdown("#### 📆 Day-by-Day Trend Matrix")
+    st.markdown("#### 📆 Day-by-Day Data Matrix")
 
+    # ── Dimension filters ─────────────────────────────────────────────────────
     tf1, tf2, tf3 = st.columns(3)
     tdf = df.copy()
 
@@ -739,7 +742,7 @@ def render_trend_matrix(df, tab_key):
             if "All" not in sel:
                 tdf = tdf[tdf["Ad name"].isin(sel)]
 
-    # Daily aggregation — sort ascending so pct_change compares to previous day
+    # ── Daily aggregation ─────────────────────────────────────────────────────
     agg_spec = {
         "Spend":       ("Spends",         "sum"),
         "Impressions": ("Impression",     "sum"),
@@ -768,26 +771,31 @@ def render_trend_matrix(df, tab_key):
         return
 
     if "Reach" in daily.columns:
-        daily["Frequency"] = (
+        daily["Ads Frequency"] = (
             daily["Impressions"] / daily["Reach"].replace(0, np.nan)
         ).round(2)
+    else:
+        daily["Ads Frequency"] = np.nan
 
-    # ── Date filter ───────────────────────────────────────────────────────────
+    # ── Date filter + delta toggle ────────────────────────────────────────────
     date_min = daily["Day"].min().date()
     date_max = daily["Day"].max().date()
-    dc1, dc2 = st.columns(2)
+    dc1, dc2, dc3 = st.columns([2, 2, 1])
     with dc1:
         start_date = st.date_input(
-            "📅 Start Date", value=date_min,
+            "Start Date", value=date_min,
             min_value=date_min, max_value=date_max,
             key=f"tm_start_{tab_key}",
         )
     with dc2:
         end_date = st.date_input(
-            "📅 End Date", value=date_max,
+            "End Date", value=date_max,
             min_value=date_min, max_value=date_max,
             key=f"tm_end_{tab_key}",
         )
+    with dc3:
+        show_delta = st.checkbox("Show Δ%", value=False, key=f"tm_delta_{tab_key}")
+
     if start_date > end_date:
         st.warning("Start date cannot be after end date.")
         return
@@ -799,73 +807,71 @@ def render_trend_matrix(df, tab_key):
         st.info("No data for the selected date range.")
         return
 
-    # Day-over-day % change
-    for col in ["Spend", "Impressions", "CPM", "Clicks", "Frequency", "CTR", "CPC", "Leads", "CPL"]:
-        if col in daily.columns:
-            daily[f"Δ {col}"] = daily[col].pct_change().mul(100).round(1)
+    # ── Day-over-day % change (computed before sorting desc) ─────────────────
+    if show_delta:
+        for col in ["Spend", "Impressions", "CPM", "Clicks", "Ads Frequency",
+                    "CTR", "CPC", "Leads", "CPL"]:
+            if col in daily.columns:
+                daily[f"Δ {col}"] = daily[col].pct_change().mul(100).round(1)
 
-    # Newest first for display
+    # ── TOTALS row ────────────────────────────────────────────────────────────
+    t_spend = daily["Spend"].sum()
+    t_imp   = daily["Impressions"].sum()
+    t_clicks= daily["Clicks"].sum()
+    t_leads = daily["Leads"].sum()
+    t_reach = daily["Reach"].sum() if "Reach" in daily.columns else 0
+
+    total_row = {
+        "Date":         "TOTAL",
+        "Spend":        t_spend,
+        "Impressions":  t_imp,
+        "CPM":          round(t_spend / t_imp   * 1000, 2) if t_imp   else np.nan,
+        "Clicks":       t_clicks,
+        "Ads Frequency":round(t_imp / t_reach,   2)        if t_reach else np.nan,
+        "CTR (%)":      round(t_clicks / t_imp   * 100, 2) if t_imp   else np.nan,
+        "CPC":          round(t_spend / t_clicks, 2)       if t_clicks else np.nan,
+        "Leads":        t_leads,
+        "CPL":          round(t_spend / t_leads,  2)       if t_leads else np.nan,
+    }
+
+    # ── Build display matrix ──────────────────────────────────────────────────
     daily = daily.sort_values("Day", ascending=False)
     daily.insert(0, "Date", daily["Day"].apply(
         lambda d: f"{d.day} {d.strftime('%b %Y')}" if pd.notna(d) else ""
     ))
 
-    col_order = [
-        "Date",
-        "Spend",       "Δ Spend",
-        "Impressions", "Δ Impressions",
-        "CPM",         "Δ CPM",
-        "Clicks",      "Δ Clicks",
-        "Frequency",   "Δ Frequency",
-        "CTR",         "Δ CTR",
-        "CPC",         "Δ CPC",
-        "Leads",       "Δ Leads",
-        "CPL",         "Δ CPL",
-    ]
+    # Rename CTR column
+    daily = daily.rename(columns={"CTR": "CTR (%)", "Δ CTR": "Δ CTR (%)"})
+
+    if show_delta:
+        col_order = [
+            "Date",
+            "Spend",         "Δ Spend",
+            "Impressions",   "Δ Impressions",
+            "CPM",           "Δ CPM",
+            "Clicks",        "Δ Clicks",
+            "Ads Frequency", "Δ Ads Frequency",
+            "CTR (%)",       "Δ CTR (%)",
+            "CPC",           "Δ CPC",
+            "Leads",         "Δ Leads",
+            "CPL",           "Δ CPL",
+        ]
+    else:
+        col_order = [
+            "Date", "Spend", "Impressions", "CPM", "Clicks",
+            "Ads Frequency", "CTR (%)", "CPC", "Leads", "CPL",
+        ]
     col_order = [c for c in col_order if c in daily.columns]
+    matrix = daily[col_order]
 
-    rename_map = {
-        "CTR":         "CTR (%)",
-        "Δ CTR":       "Δ CTR (%)",
-        "Frequency":   "Ad Frequency",
-        "Δ Frequency": "Δ Ad Frequency",
-    }
-    matrix = daily[col_order].rename(columns=rename_map)
-
-    fmt = {
-        "Spend":          "₹{:,.0f}",  "Δ Spend":          "{:+.1f}%",
-        "Impressions":    "{:,.0f}",   "Δ Impressions":    "{:+.1f}%",
-        "CPM":            "₹{:.2f}",   "Δ CPM":            "{:+.1f}%",
-        "Clicks":         "{:,.0f}",   "Δ Clicks":         "{:+.1f}%",
-        "Ad Frequency":   "{:.2f}",    "Δ Ad Frequency":   "{:+.1f}%",
-        "CTR (%)":        "{:.2f}%",   "Δ CTR (%)":        "{:+.1f}%",
-        "CPC":            "₹{:.1f}",   "Δ CPC":            "{:+.1f}%",
-        "Leads":          "{:,.0f}",   "Δ Leads":          "{:+.1f}%",
-        "CPL":            "₹{:.1f}",   "Δ CPL":            "{:+.1f}%",
-    }
-    fmt = {k: v for k, v in fmt.items() if k in matrix.columns}
-
-    # Per-column colour gradient (direction-aware)
-    gradient_cfg = [
-        ("Spend",          "Blues"),    ("Δ Spend",          "Blues"),
-        ("Impressions",    "Blues"),    ("Δ Impressions",    "Blues"),
-        ("CPM",            "RdYlGn_r"), ("Δ CPM",            "RdYlGn_r"),
-        ("Clicks",         "Blues"),    ("Δ Clicks",         "Blues"),
-        ("Ad Frequency",   "RdYlGn_r"), ("Δ Ad Frequency",  "RdYlGn_r"),
-        ("CTR (%)",        "RdYlGn"),   ("Δ CTR (%)",        "RdYlGn"),
-        ("CPC",            "RdYlGn_r"), ("Δ CPC",            "RdYlGn_r"),
-        ("Leads",          "RdYlGn"),   ("Δ Leads",          "RdYlGn"),
-        ("CPL",            "RdYlGn_r"), ("Δ CPL",            "RdYlGn_r"),
-    ]
-
-    # ── Column filter (below table) ──────────────────────────────────────────
+    # ── Column selector ───────────────────────────────────────────────────────
     metric_options = [c for c in [
         "Spend", "Impressions", "CPM", "Clicks",
-        "Ad Frequency", "CTR (%)", "CPC", "Leads", "CPL",
+        "Ads Frequency", "CTR (%)", "CPC", "Leads", "CPL",
     ] if c in matrix.columns]
 
     selected_metrics = st.multiselect(
-        "📊 Select columns",
+        "Select columns to display",
         options=metric_options,
         default=metric_options,
         key=f"tm_cols_{tab_key}",
@@ -875,20 +881,740 @@ def render_trend_matrix(df, tab_key):
         keep_cols = ["Date"]
         for m in selected_metrics:
             keep_cols.append(m)
-            delta = f"Δ {m}" if f"Δ {m}" in matrix.columns else None
-            if delta:
-                keep_cols.append(delta)
+            if show_delta:
+                delta_col = f"Δ {m}"
+                if delta_col in matrix.columns:
+                    keep_cols.append(delta_col)
         matrix = matrix[[c for c in keep_cols if c in matrix.columns]]
-        fmt    = {k: v for k, v in fmt.items() if k in matrix.columns}
-        gradient_cfg = [(c, cm) for c, cm in gradient_cfg if c in matrix.columns]
 
+    # Build total_row DataFrame aligned to final matrix columns
+    total_df = pd.DataFrame([{c: total_row.get(c, np.nan) for c in matrix.columns}])
+
+    # ── Format spec ───────────────────────────────────────────────────────────
+    fmt = {
+        "Spend":          "₹{:,.0f}",
+        "Impressions":    "{:,.0f}",
+        "CPM":            "₹{:.2f}",
+        "Clicks":         "{:,.0f}",
+        "Ads Frequency":  "{:.2f}",
+        "CTR (%)":        "{:.2f}%",
+        "CPC":            "₹{:.1f}",
+        "Leads":          "{:,.0f}",
+        "CPL":            "₹{:.1f}",
+        "Δ Spend":        "{:+.1f}%",
+        "Δ Impressions":  "{:+.1f}%",
+        "Δ CPM":          "{:+.1f}%",
+        "Δ Clicks":       "{:+.1f}%",
+        "Δ Ads Frequency":"{:+.1f}%",
+        "Δ CTR (%)":      "{:+.1f}%",
+        "Δ CPC":          "{:+.1f}%",
+        "Δ Leads":        "{:+.1f}%",
+        "Δ CPL":          "{:+.1f}%",
+    }
+    fmt = {k: v for k, v in fmt.items() if k in matrix.columns}
+
+    # ── Colour gradients ──────────────────────────────────────────────────────
+    gradient_cfg = [
+        ("Spend",          "Blues"),
+        ("Impressions",    "Blues"),
+        ("CPM",            "RdYlGn_r"),
+        ("Clicks",         "Blues"),
+        ("Ads Frequency",  "RdYlGn_r"),
+        ("CTR (%)",        "RdYlGn"),
+        ("CPC",            "RdYlGn_r"),
+        ("Leads",          "RdYlGn"),
+        ("CPL",            "RdYlGn_r"),
+    ]
+    if show_delta:
+        gradient_cfg += [
+            ("Δ Spend",         "Blues"),
+            ("Δ Impressions",   "Blues"),
+            ("Δ CPM",           "RdYlGn_r"),
+            ("Δ Clicks",        "Blues"),
+            ("Δ Ads Frequency", "RdYlGn_r"),
+            ("Δ CTR (%)",       "RdYlGn"),
+            ("Δ CPC",           "RdYlGn_r"),
+            ("Δ Leads",         "RdYlGn"),
+            ("Δ CPL",           "RdYlGn_r"),
+        ]
+    gradient_cfg = [(c, cm) for c, cm in gradient_cfg if c in matrix.columns]
+
+    # ── Render pinned TOTAL row ───────────────────────────────────────────────
+    total_fmt = {k: v for k, v in fmt.items()
+                 if k in total_df.columns and total_df[k].notna().any()}
+    styled_total = (
+        total_df.style
+        .format(total_fmt, na_rep="—")
+        .set_properties(**{
+            "background-color": "#1e3c72",
+            "color": "white",
+            "font-weight": "bold",
+        })
+        .hide(axis="index")
+    )
+    st.dataframe(styled_total, use_container_width=True, hide_index=True)
+
+    # ── Render main scrollable matrix ────────────────────────────────────────
     styled = matrix.style.format(fmt, na_rep="—")
     for col, cmap in gradient_cfg:
         if col in matrix.columns and matrix[col].notna().any():
             styled = styled.background_gradient(cmap=cmap, subset=[col], axis=0)
 
-    st.dataframe(styled, use_container_width=True, height=420,
-                 hide_index=True)
+    st.dataframe(styled, use_container_width=True, height=420, hide_index=True)
+
+    # ── CSV download ──────────────────────────────────────────────────────────
+    csv_bytes = (
+        pd.concat([total_df, matrix], ignore_index=True)
+        .to_csv(index=False)
+        .encode("utf-8")
+    )
+    st.download_button(
+        label="⬇️ Download Day-by-Day Matrix CSV",
+        data=csv_bytes,
+        file_name=f"day_by_day_matrix_{tab_key}.csv",
+        mime="text/csv",
+        key=f"tm_download_{tab_key}",
+    )
+
+
+# ── Campaign Performance Matrix ───────────────────────────────────────────────
+
+def render_campaign_matrix(df, tab_key):
+    st.markdown("#### 🎯 Campaign Performance Matrix")
+    st.caption("Consolidated campaign-level metrics — reflects selected filters.")
+
+    # ── Dimension filters ─────────────────────────────────────────────────────
+    cf1, cf2, cf3 = st.columns(3)
+    cdf = df.copy()
+
+    with cf1:
+        if "Campaign name" in cdf.columns:
+            opts = sorted(cdf["Campaign name"].dropna().unique())
+            sel = st.multiselect("Campaign Name", ["All"] + opts, default=["All"],
+                                 key=f"cm_camp_{tab_key}")
+            if "All" not in sel:
+                cdf = cdf[cdf["Campaign name"].isin(sel)]
+
+    with cf2:
+        if "Ad set name" in cdf.columns:
+            opts = sorted(cdf["Ad set name"].dropna().unique())
+            sel = st.multiselect("Ad Set Name", ["All"] + opts, default=["All"],
+                                 key=f"cm_adset_{tab_key}")
+            if "All" not in sel:
+                cdf = cdf[cdf["Ad set name"].isin(sel)]
+
+    with cf3:
+        if "Ad name" in cdf.columns:
+            opts = sorted(cdf["Ad name"].dropna().unique())
+            sel = st.multiselect("Ad Name", ["All"] + opts, default=["All"],
+                                 key=f"cm_ad_{tab_key}")
+            if "All" not in sel:
+                cdf = cdf[cdf["Ad name"].isin(sel)]
+
+    # ── Date range filter ─────────────────────────────────────────────────────
+    date_min = cdf["Day"].min().date() if not cdf.empty else df["Day"].min().date()
+    date_max = cdf["Day"].max().date() if not cdf.empty else df["Day"].max().date()
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        start_date = st.date_input(
+            "Start Date", value=date_min,
+            min_value=date_min, max_value=date_max,
+            key=f"cm_start_{tab_key}",
+        )
+    with dc2:
+        end_date = st.date_input(
+            "End Date", value=date_max,
+            min_value=date_min, max_value=date_max,
+            key=f"cm_end_{tab_key}",
+        )
+    if start_date > end_date:
+        st.warning("Start date cannot be after end date.")
+        return
+    cdf = cdf[
+        (cdf["Day"].dt.date >= start_date) &
+        (cdf["Day"].dt.date <= end_date)
+    ]
+    if cdf.empty:
+        st.info("No campaign data available for the selected filters.")
+        return
+
+    # ── Ensure optional columns exist ─────────────────────────────────────────
+    for col in ["Reach", "Conversions", "New Leads DB", "Old Leads DB"]:
+        if col not in cdf.columns:
+            cdf[col] = 0
+
+    # ── Group by Campaign / Ad Set / Ad ───────────────────────────────────────
+    group_cols = [c for c in ["Campaign name", "Ad set name", "Ad name"] if c in cdf.columns]
+    if not group_cols:
+        st.info("No campaign dimension columns available.")
+        return
+
+    matrix = (
+        cdf.groupby(group_cols, dropna=False)
+        .agg(
+            **{
+                "Day Spend":   ("Spends",          "sum"),
+                "Reach":         ("Reach",           "sum"),
+                "Impressions":   ("Impression",      "sum"),
+                "Clicks":        ("Clicks",          "sum"),
+                "Conversions":   ("Conversions",     "sum"),
+                "New Leads DB":  ("New Leads DB",    "sum"),
+                "Old Leads DB":  ("Old Leads DB",    "sum"),
+                "Total Leads DB":("Total Leads DB",  "sum"),
+            }
+        )
+        .reset_index()
+    )
+
+    matrix["Frequency"] = (
+        matrix["Impressions"] / matrix["Reach"].replace(0, np.nan)
+    ).round(2)
+    matrix["CPL"] = (
+        matrix["Day Spend"] / matrix["Total Leads DB"].replace(0, np.nan)
+    ).round(2)
+    matrix["CTR (%)"] = (
+        (matrix["Clicks"] / matrix["Impressions"].replace(0, np.nan)) * 100
+    ).round(2)
+    matrix["CPC"] = (
+        matrix["Day Spend"] / matrix["Clicks"].replace(0, np.nan)
+    ).round(2)
+    matrix["Conversion Rate (%)"] = (
+        (matrix["Total Leads DB"] / matrix["Clicks"].replace(0, np.nan)) * 100
+    ).round(2)
+    matrix = matrix.replace([np.inf, -np.inf], np.nan)
+
+    col_order = group_cols + [
+        "Day Spend", "Reach", "Impressions", "Frequency",
+        "Clicks", "Conversions",
+        "New Leads DB", "Old Leads DB", "Total Leads DB",
+        "CPL", "CTR (%)", "CPC", "Conversion Rate (%)",
+    ]
+    col_order = [c for c in col_order if c in matrix.columns]
+
+    # ── Sort control ──────────────────────────────────────────────────────────
+    sort_options = [c for c in col_order if c not in group_cols]
+    sc1, sc2 = st.columns([2, 1])
+    with sc1:
+        sort_by = st.selectbox(
+            "Sort by", sort_options,
+            index=sort_options.index("Clicks") if "Clicks" in sort_options else 0,
+            key=f"cm_sortby_{tab_key}",
+        )
+    with sc2:
+        sort_order = st.selectbox(
+            "Order", ["Descending", "Ascending"],
+            key=f"cm_sortorder_{tab_key}",
+        )
+    ascending = sort_order == "Ascending"
+    matrix = matrix.sort_values(sort_by, ascending=ascending, na_position="last")
+    matrix = matrix[col_order].reset_index(drop=True)
+
+    # ── TOTAL row (derived metrics use aggregated sums) ───────────────────────
+    t_spend  = matrix["Day Spend"].sum()    if "Day Spend"    in matrix else 0
+    t_reach  = matrix["Reach"].sum()          if "Reach"          in matrix else 0
+    t_imp    = matrix["Impressions"].sum()    if "Impressions"    in matrix else 0
+    t_clicks = matrix["Clicks"].sum()         if "Clicks"         in matrix else 0
+    t_conv   = matrix["Conversions"].sum()    if "Conversions"    in matrix else 0
+    t_new    = matrix["New Leads DB"].sum()   if "New Leads DB"   in matrix else 0
+    t_old    = matrix["Old Leads DB"].sum()   if "Old Leads DB"   in matrix else 0
+    t_leads  = matrix["Total Leads DB"].sum() if "Total Leads DB" in matrix else 0
+
+    total_row = {c: "" for c in col_order}
+    total_row[group_cols[0]] = "TOTAL"
+    total_row["Day Spend"]    = round(t_spend, 2)
+    total_row["Reach"]          = round(t_reach, 0)
+    total_row["Impressions"]    = round(t_imp, 0)
+    total_row["Frequency"]      = round(t_imp / t_reach, 2)            if t_reach  else np.nan
+    total_row["Clicks"]         = round(t_clicks, 0)
+    total_row["Conversions"]    = round(t_conv, 0)
+    total_row["New Leads DB"]   = round(t_new, 0)
+    total_row["Old Leads DB"]   = round(t_old, 0)
+    total_row["Total Leads DB"] = round(t_leads, 0)
+    total_row["CPL"]            = round(t_spend / t_leads, 2)          if t_leads  else np.nan
+    total_row["CTR (%)"]        = round(t_clicks / t_imp * 100, 2)     if t_imp    else np.nan
+    total_row["CPC"]            = round(t_spend / t_clicks, 2)         if t_clicks else np.nan
+    total_row["Conversion Rate (%)"] = round(t_leads / t_clicks * 100, 2) if t_clicks else np.nan
+    total_df = pd.DataFrame([{c: total_row.get(c, "") for c in col_order}])
+
+    # ── Format spec ───────────────────────────────────────────────────────────
+    fmt = {
+        "Day Spend":         "₹{:,.0f}",
+        "Reach":               "{:,.0f}",
+        "Impressions":         "{:,.0f}",
+        "Frequency":           "{:.2f}",
+        "Clicks":              "{:,.0f}",
+        "Conversions":         "{:,.0f}",
+        "New Leads DB":        "{:,.0f}",
+        "Old Leads DB":        "{:,.0f}",
+        "Total Leads DB":      "{:,.0f}",
+        "CPL":                 "₹{:.1f}",
+        "CTR (%)":             "{:.2f}%",
+        "CPC":                 "₹{:.1f}",
+        "Conversion Rate (%)": "{:.2f}%",
+    }
+    fmt = {k: v for k, v in fmt.items() if k in matrix.columns}
+    total_fmt = {k: v for k, v in fmt.items() if total_row.get(k, "") != ""}
+
+    # ── Annotate active sort column with ↑ / ↓ indicator ──────────────────────
+    arrow = "↑" if ascending else "↓"
+    sort_label = f"{sort_by} {arrow}"
+    matrix = matrix.rename(columns={sort_by: sort_label})
+    total_df = total_df.rename(columns={sort_by: sort_label})
+    if sort_by in fmt:
+        fmt[sort_label] = fmt.pop(sort_by)
+    if sort_by in total_fmt:
+        total_fmt[sort_label] = total_fmt.pop(sort_by)
+
+    # ── Pinned TOTAL row ──────────────────────────────────────────────────────
+    styled_total = (
+        total_df.style
+        .format(total_fmt, na_rep="—")
+        .set_properties(**{
+            "background-color": "#1e3c72",
+            "color": "white",
+            "font-weight": "bold",
+        })
+        .hide(axis="index")
+    )
+    st.dataframe(styled_total, use_container_width=True, hide_index=True)
+
+    # ── Main matrix with colour gradients ─────────────────────────────────────
+    gradient_cfg = [
+        ("Day Spend",         "Blues"),
+        ("Reach",               "Blues"),
+        ("Impressions",         "Blues"),
+        ("Frequency",           "RdYlGn_r"),
+        ("Clicks",              "Blues"),
+        ("Conversions",         "RdYlGn"),
+        ("New Leads DB",        "RdYlGn"),
+        ("Old Leads DB",        "Blues"),
+        ("Total Leads DB",      "RdYlGn"),
+        ("CPL",                 "RdYlGn_r"),
+        ("CTR (%)",             "RdYlGn"),
+        ("CPC",                 "RdYlGn_r"),
+        ("Conversion Rate (%)", "RdYlGn"),
+    ]
+    gradient_cfg = [
+        (sort_label if c == sort_by else c, cm) for c, cm in gradient_cfg
+    ]
+    gradient_cfg = [(c, cm) for c, cm in gradient_cfg if c in matrix.columns]
+
+    styled = matrix.style.format(fmt, na_rep="—")
+    for col, cmap in gradient_cfg:
+        if matrix[col].notna().any():
+            styled = styled.background_gradient(cmap=cmap, subset=[col], axis=0)
+
+    st.dataframe(styled, use_container_width=True, height=460, hide_index=True)
+
+    # ── CSV download ──────────────────────────────────────────────────────────
+    csv_bytes = (
+        pd.concat([total_df, matrix], ignore_index=True)
+        .to_csv(index=False)
+        .encode("utf-8")
+    )
+    st.download_button(
+        label="⬇️ Download Campaign Matrix CSV",
+        data=csv_bytes,
+        file_name=f"campaign_matrix_{tab_key}.csv",
+        mime="text/csv",
+        key=f"cm_download_{tab_key}",
+    )
+
+
+# ── Pivot table ─────────────────────────────────────────────────────────────────
+
+def render_pivot_table(df, tab_key):
+    st.markdown("#### 🧩 Pivot Table")
+    st.caption("Campaign + Ad Set performance summary with key lead and cost metrics.")
+
+    p_df = df.copy()
+    for col in ["Spends", "Reach", "Impression", "Clicks", "Conversions", "New Leads DB", "Old Leads DB", "Total Leads DB"]:
+        if col not in p_df.columns:
+            p_df[col] = 0
+
+    if "Campaign name" not in p_df.columns:
+        p_df["Campaign name"] = "All"
+    if "Ad set name" not in p_df.columns:
+        p_df["Ad set name"] = "All"
+
+    pivot = (
+        p_df.groupby(["Campaign name", "Ad set name"], dropna=False)
+        .agg(
+            Spend=("Spends", "sum"),
+            Reach=("Reach", "sum"),
+            Impressions=("Impression", "sum"),
+            Clicks=("Clicks", "sum"),
+            Conversions=("Conversions", "sum"),
+            New_Leads=("New Leads DB", "sum"),
+            Old_Leads=("Old Leads DB", "sum"),
+            Total_Leads=("Total Leads DB", "sum"),
+        )
+        .reset_index()
+    )
+
+    pivot["CTR (%)"] = (
+        pivot["Clicks"] / pivot["Impressions"].replace(0, np.nan) * 100
+    ).round(2)
+    pivot["CPC"] = (
+        pivot["Spend"] / pivot["Clicks"].replace(0, np.nan)
+    ).round(2)
+    pivot["CPL"] = (
+        pivot["Spend"] / pivot["Total_Leads"].replace(0, np.nan)
+    ).round(2)
+    pivot["Conversion Rate (%)"] = (
+        pivot["Total_Leads"] / pivot["Clicks"].replace(0, np.nan) * 100
+    ).round(2)
+
+    pivot = pivot.rename(columns={
+        "New_Leads": "New Leads DB",
+        "Old_Leads": "Old Leads DB",
+        "Total_Leads": "Total Leads DB",
+    })
+
+    col_order = [
+        "Campaign name", "Ad set name", "Spend", "Reach", "Impressions",
+        "Clicks", "CTR (%)", "CPC", "Conversions", "New Leads DB",
+        "Old Leads DB", "Total Leads DB", "CPL", "Conversion Rate (%)",
+    ]
+    col_order = [c for c in col_order if c in pivot.columns]
+    pivot = pivot[col_order]
+
+    if pivot.empty:
+        st.info("No pivot data available for the selected filters.")
+        return
+
+    total_row = {c: "" for c in col_order}
+    total_row["Campaign name"] = "TOTAL"
+    total_row["Spend"] = pivot["Spend"].sum()
+    total_row["Reach"] = pivot["Reach"].sum() if "Reach" in pivot.columns else 0
+    total_row["Impressions"] = pivot["Impressions"].sum() if "Impressions" in pivot.columns else 0
+    total_row["Clicks"] = pivot["Clicks"].sum() if "Clicks" in pivot.columns else 0
+    total_row["Conversions"] = pivot["Conversions"].sum() if "Conversions" in pivot.columns else 0
+    total_row["New Leads DB"] = pivot["New Leads DB"].sum() if "New Leads DB" in pivot.columns else 0
+    total_row["Old Leads DB"] = pivot["Old Leads DB"].sum() if "Old Leads DB" in pivot.columns else 0
+    total_row["Total Leads DB"] = pivot["Total Leads DB"].sum() if "Total Leads DB" in pivot.columns else 0
+    total_row["CTR (%)"] = round(
+        total_row["Clicks"] / total_row["Impressions"] * 100, 2
+    ) if total_row["Impressions"] else np.nan
+    total_row["CPC"] = round(
+        total_row["Spend"] / total_row["Clicks"], 2
+    ) if total_row["Clicks"] else np.nan
+    total_row["CPL"] = round(
+        total_row["Spend"] / total_row["Total Leads DB"], 2
+    ) if total_row["Total Leads DB"] else np.nan
+    total_row["Conversion Rate (%)"] = round(
+        total_row["Total Leads DB"] / total_row["Clicks"] * 100, 2
+    ) if total_row["Clicks"] else np.nan
+
+    total_df = pd.DataFrame([total_row])
+
+    fmt = {
+        "Spend": "₹{:,.0f}",
+        "Reach": "{:,.0f}",
+        "Impressions": "{:,.0f}",
+        "Clicks": "{:,.0f}",
+        "Conversions": "{:,.0f}",
+        "New Leads DB": "{:,.0f}",
+        "Old Leads DB": "{:,.0f}",
+        "Total Leads DB": "{:,.0f}",
+        "CTR (%)": "{:.2f}%",
+        "CPC": "₹{:.1f}",
+        "CPL": "₹{:.1f}",
+        "Conversion Rate (%)": "{:.2f}%",
+    }
+    fmt = {k: v for k, v in fmt.items() if k in pivot.columns}
+    total_fmt = {k: v for k, v in fmt.items() if total_row.get(k, "") != ""}
+
+    styled_total = (
+        total_df.style
+        .format(total_fmt, na_rep="—")
+        .set_properties(**{
+            "background-color": "#1e3c72",
+            "color": "white",
+            "font-weight": "bold",
+        })
+        .hide(axis="index")
+    )
+    st.dataframe(styled_total, use_container_width=True, hide_index=True)
+
+    styled = pivot.style.format(fmt, na_rep="—")
+    st.dataframe(styled, use_container_width=True, height=420, hide_index=True)
+
+    csv_bytes = pd.concat([total_df, pivot], ignore_index=True).to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="⬇️ Download Pivot Table CSV",
+        data=csv_bytes,
+        file_name=f"pivot_table_{tab_key}.csv",
+        mime="text/csv",
+        key=f"pivot_download_{tab_key}",
+    )
+
+
+# ── Detailed pivot table (Campaign / Ad Set / Ad) ─────────────────────────────
+
+def render_detailed_pivot_table(df, tab_key):
+    st.markdown("#### 🧮 Detailed Pivot Table — Campaign / Ad Set / Ad")
+    st.caption(
+        "Granular breakdown with Meta and DB lead metrics. "
+        "CPR = Cost per Result (Spend ÷ leads). CR = Conversion Rate (leads ÷ Clicks × 100)."
+    )
+
+    p_df = df.copy()
+    for col in ["Spends", "Reach", "Impression", "Clicks", "Conversions",
+                "New Leads DB", "Old Leads DB", "Total Leads DB"]:
+        if col not in p_df.columns:
+            p_df[col] = 0
+    for col in ["Campaign name", "Ad set name", "Ad name"]:
+        if col not in p_df.columns:
+            p_df[col] = "—"
+
+    # ── Dimension filters ─────────────────────────────────────────────────────
+    pf1, pf2, pf3 = st.columns(3)
+    with pf1:
+        opts = sorted(p_df["Campaign name"].dropna().unique())
+        sel = st.multiselect("Campaign Name", ["All"] + opts, default=["All"],
+                             key=f"dp_camp_{tab_key}")
+        if "All" not in sel:
+            p_df = p_df[p_df["Campaign name"].isin(sel)]
+    with pf2:
+        opts = sorted(p_df["Ad set name"].dropna().unique())
+        sel = st.multiselect("Ad Set Name", ["All"] + opts, default=["All"],
+                             key=f"dp_adset_{tab_key}")
+        if "All" not in sel:
+            p_df = p_df[p_df["Ad set name"].isin(sel)]
+    with pf3:
+        opts = sorted(p_df["Ad name"].dropna().unique())
+        sel = st.multiselect("Ad Name", ["All"] + opts, default=["All"],
+                             key=f"dp_ad_{tab_key}")
+        if "All" not in sel:
+            p_df = p_df[p_df["Ad name"].isin(sel)]
+
+    if p_df.empty:
+        st.info("No data available for the selected filters.")
+        return
+
+    # ── Date filter ───────────────────────────────────────────────────────────
+    date_min = p_df["Day"].min().date()
+    date_max = p_df["Day"].max().date()
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        start_date = st.date_input(
+            "Start Date", value=date_min,
+            min_value=date_min, max_value=date_max,
+            key=f"dp_start_{tab_key}",
+        )
+    with dc2:
+        end_date = st.date_input(
+            "End Date", value=date_max,
+            min_value=date_min, max_value=date_max,
+            key=f"dp_end_{tab_key}",
+        )
+    if start_date > end_date:
+        st.warning("Start date cannot be after end date.")
+        return
+    p_df = p_df[
+        (p_df["Day"].dt.date >= start_date) &
+        (p_df["Day"].dt.date <= end_date)
+    ]
+    if p_df.empty:
+        st.info("No data in the selected date range.")
+        return
+
+    # ── Aggregate ─────────────────────────────────────────────────────────────
+    pivot = (
+        p_df.groupby(["Campaign name", "Ad set name", "Ad name"], dropna=False)
+        .agg(
+            Spends=("Spends", "sum"),
+            Reach=("Reach", "sum"),
+            Impressions=("Impression", "sum"),
+            Clicks=("Clicks", "sum"),
+            Conversions_Meta=("Conversions", "sum"),
+            New_Leads_DB=("New Leads DB", "sum"),
+            Old_Leads_DB=("Old Leads DB", "sum"),
+            Total_Leads_DB=("Total Leads DB", "sum"),
+        )
+        .reset_index()
+    )
+
+    pivot["CTR%"] = (
+        pivot["Clicks"] / pivot["Impressions"].replace(0, np.nan) * 100
+    ).round(2)
+    pivot["CPC"] = (
+        pivot["Spends"] / pivot["Clicks"].replace(0, np.nan)
+    ).round(2)
+    pivot["CPR Meta"] = (
+        pivot["Spends"] / pivot["Conversions_Meta"].replace(0, np.nan)
+    ).round(2)
+    pivot["CR Meta"] = (
+        pivot["Conversions_Meta"] / pivot["Clicks"].replace(0, np.nan) * 100
+    ).round(2)
+    pivot["CPR New Leads DB"] = (
+        pivot["Spends"] / pivot["New_Leads_DB"].replace(0, np.nan)
+    ).round(2)
+    pivot["CPR DB"] = (
+        pivot["Spends"] / pivot["Total_Leads_DB"].replace(0, np.nan)
+    ).round(2)
+    pivot["CR DB"] = (
+        pivot["Total_Leads_DB"] / pivot["Clicks"].replace(0, np.nan) * 100
+    ).round(2)
+
+    pivot = pivot.replace([np.inf, -np.inf], np.nan)
+
+    pivot = pivot.rename(columns={
+        "Conversions_Meta": "Conversions Meta",
+        "New_Leads_DB":     "New Leads DB",
+        "Old_Leads_DB":     "Old Leads DB",
+        "Total_Leads_DB":   "Total Leads DB",
+    })
+
+    col_order = [
+        "Campaign name", "Ad set name", "Ad name",
+        "Spends", "Reach", "Impressions", "Clicks",
+        "CTR%", "CPC",
+        "Conversions Meta", "CPR Meta", "CR Meta",
+        "New Leads DB", "CPR New Leads DB",
+        "Old Leads DB", "Total Leads DB", "CPR DB", "CR DB",
+    ]
+    col_order = [c for c in col_order if c in pivot.columns]
+    pivot = pivot[col_order]
+
+    if pivot.empty:
+        st.info("No pivot data available for the selected filters.")
+        return
+
+    # ── Sort control ──────────────────────────────────────────────────────────
+    sort_options = [c for c in col_order if c not in ("Campaign name", "Ad set name", "Ad name")]
+    sc1, sc2 = st.columns([2, 1])
+    with sc1:
+        sort_by = st.selectbox(
+            "Sort by", sort_options,
+            index=sort_options.index("Spends") if "Spends" in sort_options else 0,
+            key=f"dp_sortby_{tab_key}",
+        )
+    with sc2:
+        sort_order = st.selectbox(
+            "Order", ["Descending", "Ascending"],
+            key=f"dp_sortorder_{tab_key}",
+        )
+    ascending = sort_order == "Ascending"
+    pivot = pivot.sort_values(sort_by, ascending=ascending, na_position="last").reset_index(drop=True)
+
+    # ── TOTAL row (derived metrics use aggregated sums) ───────────────────────
+    t_spend  = pivot["Spends"].sum()
+    t_reach  = pivot["Reach"].sum()           if "Reach" in pivot.columns else 0
+    t_imp    = pivot["Impressions"].sum()     if "Impressions" in pivot.columns else 0
+    t_clicks = pivot["Clicks"].sum()          if "Clicks" in pivot.columns else 0
+    t_conv   = pivot["Conversions Meta"].sum() if "Conversions Meta" in pivot.columns else 0
+    t_new    = pivot["New Leads DB"].sum()    if "New Leads DB" in pivot.columns else 0
+    t_old    = pivot["Old Leads DB"].sum()    if "Old Leads DB" in pivot.columns else 0
+    t_total  = pivot["Total Leads DB"].sum()  if "Total Leads DB" in pivot.columns else 0
+
+    total_row = {c: "" for c in col_order}
+    total_row["Campaign name"]      = "TOTAL"
+    total_row["Spends"]             = round(t_spend, 2)
+    total_row["Reach"]              = round(t_reach, 0)
+    total_row["Impressions"]        = round(t_imp, 0)
+    total_row["Clicks"]             = round(t_clicks, 0)
+    total_row["CTR%"]               = round(t_clicks / t_imp * 100, 2)   if t_imp    else np.nan
+    total_row["CPC"]                = round(t_spend / t_clicks, 2)       if t_clicks else np.nan
+    total_row["Conversions Meta"]   = round(t_conv, 0)
+    total_row["CPR Meta"]           = round(t_spend / t_conv, 2)         if t_conv   else np.nan
+    total_row["CR Meta"]            = round(t_conv / t_clicks * 100, 2)  if t_clicks else np.nan
+    total_row["New Leads DB"]       = round(t_new, 0)
+    total_row["CPR New Leads DB"]   = round(t_spend / t_new, 2)          if t_new    else np.nan
+    total_row["Old Leads DB"]       = round(t_old, 0)
+    total_row["Total Leads DB"]     = round(t_total, 0)
+    total_row["CPR DB"]             = round(t_spend / t_total, 2)        if t_total  else np.nan
+    total_row["CR DB"]              = round(t_total / t_clicks * 100, 2) if t_clicks else np.nan
+
+    total_df = pd.DataFrame([{c: total_row.get(c, "") for c in col_order}])
+
+    # ── Format spec ───────────────────────────────────────────────────────────
+    fmt = {
+        "Spends":            "₹{:,.0f}",
+        "Reach":             "{:,.0f}",
+        "Impressions":       "{:,.0f}",
+        "Clicks":            "{:,.0f}",
+        "CTR%":              "{:.2f}%",
+        "CPC":               "₹{:.1f}",
+        "Conversions Meta":  "{:,.0f}",
+        "CPR Meta":          "₹{:.1f}",
+        "CR Meta":           "{:.2f}%",
+        "New Leads DB":      "{:,.0f}",
+        "CPR New Leads DB":  "₹{:.1f}",
+        "Old Leads DB":      "{:,.0f}",
+        "Total Leads DB":    "{:,.0f}",
+        "CPR DB":            "₹{:.1f}",
+        "CR DB":             "{:.2f}%",
+    }
+    fmt = {k: v for k, v in fmt.items() if k in pivot.columns}
+    total_fmt = {k: v for k, v in fmt.items() if total_row.get(k, "") != ""}
+
+    # ── Annotate active sort column with ↑ / ↓ indicator ──────────────────────
+    arrow = "↑" if ascending else "↓"
+    sort_label = f"{sort_by} {arrow}"
+    pivot = pivot.rename(columns={sort_by: sort_label})
+    total_df = total_df.rename(columns={sort_by: sort_label})
+    if sort_by in fmt:
+        fmt[sort_label] = fmt.pop(sort_by)
+    if sort_by in total_fmt:
+        total_fmt[sort_label] = total_fmt.pop(sort_by)
+
+    # ── Pinned TOTAL row ──────────────────────────────────────────────────────
+    styled_total = (
+        total_df.style
+        .format(total_fmt, na_rep="—")
+        .set_properties(**{
+            "background-color": "#1e3c72",
+            "color": "white",
+            "font-weight": "bold",
+        })
+        .hide(axis="index")
+    )
+    st.dataframe(styled_total, use_container_width=True, hide_index=True)
+
+    # ── Main pivot with colour gradients ──────────────────────────────────────
+    gradient_cfg = [
+        ("Spends",            "Blues"),
+        ("Reach",             "Blues"),
+        ("Impressions",       "Blues"),
+        ("Clicks",            "Blues"),
+        ("CTR%",              "RdYlGn"),
+        ("CPC",               "RdYlGn_r"),
+        ("Conversions Meta",  "RdYlGn"),
+        ("CPR Meta",          "RdYlGn_r"),
+        ("CR Meta",           "RdYlGn"),
+        ("New Leads DB",      "RdYlGn"),
+        ("CPR New Leads DB",  "RdYlGn_r"),
+        ("Old Leads DB",      "Blues"),
+        ("Total Leads DB",    "RdYlGn"),
+        ("CPR DB",            "RdYlGn_r"),
+        ("CR DB",             "RdYlGn"),
+    ]
+    gradient_cfg = [
+        (sort_label if c == sort_by else c, cm) for c, cm in gradient_cfg
+    ]
+    gradient_cfg = [(c, cm) for c, cm in gradient_cfg if c in pivot.columns]
+
+    styled = pivot.style.format(fmt, na_rep="—")
+    for col, cmap in gradient_cfg:
+        if pivot[col].notna().any():
+            styled = styled.background_gradient(cmap=cmap, subset=[col], axis=0)
+
+    st.dataframe(styled, use_container_width=True, height=520, hide_index=True)
+
+    csv_bytes = (
+        pd.concat([total_df, pivot], ignore_index=True)
+        .to_csv(index=False)
+        .encode("utf-8")
+    )
+    st.download_button(
+        label="⬇️ Download Detailed Pivot Table CSV",
+        data=csv_bytes,
+        file_name=f"detailed_pivot_table_{tab_key}.csv",
+        mime="text/csv",
+        key=f"detailed_pivot_download_{tab_key}",
+    )
 
 
 # ── Tab renderers ─────────────────────────────────────────────────────────────
@@ -914,6 +1640,9 @@ def render_tab(tab_name, sheet_url, upload_key):
     render_weekly_comparison(fdf, tab_key=upload_key)
     render_data_table(fdf, tab_key=upload_key)
     render_trend_matrix(fdf, tab_key=upload_key)
+    render_campaign_matrix(fdf, tab_key=upload_key)
+    render_pivot_table(fdf, tab_key=upload_key)
+    render_detailed_pivot_table(fdf, tab_key=upload_key)
 
 
 def render_combined_tab():
@@ -967,6 +1696,35 @@ def render_combined_tab():
     render_weekly_comparison(fdf, tab_key="combined")
     render_data_table(fdf, tab_key="combined")
     render_trend_matrix(fdf, tab_key="combined")
+    render_campaign_matrix(fdf, tab_key="combined")
+    render_pivot_table(fdf, tab_key="combined")
+    render_detailed_pivot_table(fdf, tab_key="combined")
+
+
+# ── Auto-refresh ──────────────────────────────────────────────────────────────
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Auto-Refresh")
+auto_refresh = st.sidebar.toggle("Enable Auto-Refresh", value=False, key="auto_refresh")
+
+if auto_refresh:
+    _INTERVALS = {
+        "1 minute":  1 * 60 * 1000,
+        "5 minutes": 5 * 60 * 1000,
+        "10 minutes": 10 * 60 * 1000,
+        "15 minutes": 15 * 60 * 1000,
+        "30 minutes": 30 * 60 * 1000,
+    }
+    interval_label = st.sidebar.selectbox(
+        "Refresh every", list(_INTERVALS.keys()), index=1, key="refresh_interval"
+    )
+    interval_ms = _INTERVALS[interval_label]
+    count = st_autorefresh(interval=interval_ms, key="dashboard_autorefresh")
+    st.sidebar.caption(
+        f"Last refreshed: {datetime.datetime.now().strftime('%H:%M:%S')}"
+        + (f"  |  Refresh #{count}" if count else "")
+    )
+    st.sidebar.success(f"Refreshing every {interval_label}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
