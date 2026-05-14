@@ -743,10 +743,16 @@ def render_trend_matrix(df, tab_key):
                 tdf = tdf[tdf["Ad name"].isin(sel)]
 
     # ── Daily aggregation ─────────────────────────────────────────────────────
+    for col in ["New Leads DB", "Old Leads DB"]:
+        if col not in tdf.columns:
+            tdf[col] = 0
+
     agg_spec = {
         "Spend":       ("Spends",         "sum"),
         "Impressions": ("Impression",     "sum"),
         "Clicks":      ("Clicks",         "sum"),
+        "New Leads":   ("New Leads DB",   "sum"),
+        "Old Leads":   ("Old Leads DB",   "sum"),
         "Leads":       ("Total Leads DB", "sum"),
     }
     if "Reach" in tdf.columns:
@@ -810,7 +816,7 @@ def render_trend_matrix(df, tab_key):
     # ── Day-over-day % change (computed before sorting desc) ─────────────────
     if show_delta:
         for col in ["Spend", "Impressions", "CPM", "Clicks", "Ads Frequency",
-                    "CTR", "CPC", "Leads", "CPL"]:
+                    "CTR", "CPC", "New Leads", "Old Leads", "Leads", "CPL"]:
             if col in daily.columns:
                 daily[f"Δ {col}"] = daily[col].pct_change().mul(100).round(1)
 
@@ -818,6 +824,8 @@ def render_trend_matrix(df, tab_key):
     t_spend = daily["Spend"].sum()
     t_imp   = daily["Impressions"].sum()
     t_clicks= daily["Clicks"].sum()
+    t_new   = daily["New Leads"].sum() if "New Leads" in daily.columns else 0
+    t_old   = daily["Old Leads"].sum() if "Old Leads" in daily.columns else 0
     t_leads = daily["Leads"].sum()
     t_reach = daily["Reach"].sum() if "Reach" in daily.columns else 0
 
@@ -830,6 +838,8 @@ def render_trend_matrix(df, tab_key):
         "Ads Frequency":round(t_imp / t_reach,   2)        if t_reach else np.nan,
         "CTR (%)":      round(t_clicks / t_imp   * 100, 2) if t_imp   else np.nan,
         "CPC":          round(t_spend / t_clicks, 2)       if t_clicks else np.nan,
+        "New Leads":    t_new,
+        "Old Leads":    t_old,
         "Leads":        t_leads,
         "CPL":          round(t_spend / t_leads,  2)       if t_leads else np.nan,
     }
@@ -853,13 +863,16 @@ def render_trend_matrix(df, tab_key):
             "Ads Frequency", "Δ Ads Frequency",
             "CTR (%)",       "Δ CTR (%)",
             "CPC",           "Δ CPC",
+            "New Leads",     "Δ New Leads",
+            "Old Leads",     "Δ Old Leads",
             "Leads",         "Δ Leads",
             "CPL",           "Δ CPL",
         ]
     else:
         col_order = [
             "Date", "Spend", "Impressions", "CPM", "Clicks",
-            "Ads Frequency", "CTR (%)", "CPC", "Leads", "CPL",
+            "Ads Frequency", "CTR (%)", "CPC",
+            "New Leads", "Old Leads", "Leads", "CPL",
         ]
     col_order = [c for c in col_order if c in daily.columns]
     matrix = daily[col_order]
@@ -867,7 +880,8 @@ def render_trend_matrix(df, tab_key):
     # ── Column selector ───────────────────────────────────────────────────────
     metric_options = [c for c in [
         "Spend", "Impressions", "CPM", "Clicks",
-        "Ads Frequency", "CTR (%)", "CPC", "Leads", "CPL",
+        "Ads Frequency", "CTR (%)", "CPC",
+        "New Leads", "Old Leads", "Leads", "CPL",
     ] if c in matrix.columns]
 
     selected_metrics = st.multiselect(
@@ -899,6 +913,8 @@ def render_trend_matrix(df, tab_key):
         "Ads Frequency":  "{:.2f}",
         "CTR (%)":        "{:.2f}%",
         "CPC":            "₹{:.1f}",
+        "New Leads":      "{:,.0f}",
+        "Old Leads":      "{:,.0f}",
         "Leads":          "{:,.0f}",
         "CPL":            "₹{:.1f}",
         "Δ Spend":        "{:+.1f}%",
@@ -908,6 +924,8 @@ def render_trend_matrix(df, tab_key):
         "Δ Ads Frequency":"{:+.1f}%",
         "Δ CTR (%)":      "{:+.1f}%",
         "Δ CPC":          "{:+.1f}%",
+        "Δ New Leads":    "{:+.1f}%",
+        "Δ Old Leads":    "{:+.1f}%",
         "Δ Leads":        "{:+.1f}%",
         "Δ CPL":          "{:+.1f}%",
     }
@@ -922,6 +940,8 @@ def render_trend_matrix(df, tab_key):
         ("Ads Frequency",  "RdYlGn_r"),
         ("CTR (%)",        "RdYlGn"),
         ("CPC",            "RdYlGn_r"),
+        ("New Leads",      "RdYlGn"),
+        ("Old Leads",      "Blues"),
         ("Leads",          "RdYlGn"),
         ("CPL",            "RdYlGn_r"),
     ]
@@ -934,6 +954,8 @@ def render_trend_matrix(df, tab_key):
             ("Δ Ads Frequency", "RdYlGn_r"),
             ("Δ CTR (%)",       "RdYlGn"),
             ("Δ CPC",           "RdYlGn_r"),
+            ("Δ New Leads",     "RdYlGn"),
+            ("Δ Old Leads",     "Blues"),
             ("Δ Leads",         "RdYlGn"),
             ("Δ CPL",           "RdYlGn_r"),
         ]
