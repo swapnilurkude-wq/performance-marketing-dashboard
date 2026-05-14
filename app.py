@@ -999,12 +999,12 @@ def render_trend_matrix(df, tab_key):
     )
 
 
-# ── Detailed pivot table (Campaign / Ad Set / Ad) ─────────────────────────────
+# ── Detailed pivot table (Campaign level) ─────────────────────────────────────
 
 def render_detailed_pivot_table(df, tab_key):
-    st.markdown("#### 🧮 Detailed Pivot Table — Campaign / Ad Set / Ad")
+    st.markdown("#### 🧮 Detailed Pivot Table — Campaign")
     st.caption(
-        "Granular breakdown with Meta and DB lead metrics. "
+        "Campaign-level breakdown with Meta and DB lead metrics. "
         "CPR = Cost per Result (Spend ÷ leads). CR = Conversion Rate (leads ÷ Clicks × 100)."
     )
 
@@ -1013,30 +1013,15 @@ def render_detailed_pivot_table(df, tab_key):
                 "New Leads DB", "Old Leads DB", "Total Leads DB"]:
         if col not in p_df.columns:
             p_df[col] = 0
-    for col in ["Campaign name", "Ad set name", "Ad name"]:
-        if col not in p_df.columns:
-            p_df[col] = "—"
+    if "Campaign name" not in p_df.columns:
+        p_df["Campaign name"] = "—"
 
     # ── Dimension filters ─────────────────────────────────────────────────────
-    pf1, pf2, pf3 = st.columns(3)
-    with pf1:
-        opts = sorted(p_df["Campaign name"].dropna().unique())
-        sel = st.multiselect("Campaign Name", ["All"] + opts, default=["All"],
-                             key=f"dp_camp_{tab_key}")
-        if "All" not in sel:
-            p_df = p_df[p_df["Campaign name"].isin(sel)]
-    with pf2:
-        opts = sorted(p_df["Ad set name"].dropna().unique())
-        sel = st.multiselect("Ad Set Name", ["All"] + opts, default=["All"],
-                             key=f"dp_adset_{tab_key}")
-        if "All" not in sel:
-            p_df = p_df[p_df["Ad set name"].isin(sel)]
-    with pf3:
-        opts = sorted(p_df["Ad name"].dropna().unique())
-        sel = st.multiselect("Ad Name", ["All"] + opts, default=["All"],
-                             key=f"dp_ad_{tab_key}")
-        if "All" not in sel:
-            p_df = p_df[p_df["Ad name"].isin(sel)]
+    opts = sorted(p_df["Campaign name"].dropna().unique())
+    sel = st.multiselect("Campaign Name", ["All"] + opts, default=["All"],
+                         key=f"dp_camp_{tab_key}")
+    if "All" not in sel:
+        p_df = p_df[p_df["Campaign name"].isin(sel)]
 
     if p_df.empty:
         st.info("No data available for the selected filters.")
@@ -1071,7 +1056,7 @@ def render_detailed_pivot_table(df, tab_key):
 
     # ── Aggregate ─────────────────────────────────────────────────────────────
     pivot = (
-        p_df.groupby(["Campaign name", "Ad set name", "Ad name"], dropna=False)
+        p_df.groupby(["Campaign name"], dropna=False)
         .agg(
             Spends=("Spends", "sum"),
             Reach=("Reach", "sum"),
@@ -1117,7 +1102,7 @@ def render_detailed_pivot_table(df, tab_key):
     })
 
     col_order = [
-        "Campaign name", "Ad set name", "Ad name",
+        "Campaign name",
         "Spends", "Reach", "Impressions", "Clicks",
         "CTR%", "CPC",
         "Conversions Meta", "CPR Meta", "CR Meta",
@@ -1132,7 +1117,7 @@ def render_detailed_pivot_table(df, tab_key):
         return
 
     # ── Sort control ──────────────────────────────────────────────────────────
-    sort_options = [c for c in col_order if c not in ("Campaign name", "Ad set name", "Ad name")]
+    sort_options = [c for c in col_order if c != "Campaign name"]
     sc1, sc2 = st.columns([2, 1])
     with sc1:
         sort_by = st.selectbox(
