@@ -1251,6 +1251,146 @@ def render_detailed_pivot_table(df, tab_key):
     )
 
 
+# ── Period × Campaign snapshot (Today / Yesterday / Last 3 Days) ──────────────
+
+def render_period_campaign_matrix(df, tab_key):
+    st.markdown("#### ⏱️ Campaign Snapshot — Today / Yesterday / Last 3 Days")
+    st.caption("Campaign-level spend and leads for the most recent periods.")
+
+    if df is None or df.empty or "Day" not in df.columns:
+        st.info("No data available.")
+        return
+
+    p_df = df.copy()
+    for col in ["Spends", "New Leads DB", "Old Leads DB", "Total Leads DB"]:
+        if col not in p_df.columns:
+            p_df[col] = 0
+    if "Campaign name" not in p_df.columns:
+        p_df["Campaign name"] = "—"
+
+    # ── Campaign filter ───────────────────────────────────────────────────────
+    opts = sorted(p_df["Campaign name"].dropna().unique())
+    sel = st.multiselect(
+        "Campaign Name", ["All"] + opts, default=["All"],
+        key=f"pcm_camp_{tab_key}",
+    )
+    if "All" not in sel:
+        p_df = p_df[p_df["Campaign name"].isin(sel)]
+
+    if p_df.empty:
+        st.info("No data for the selected campaigns.")
+        return
+
+    # ── Define periods relative to latest day in data ─────────────────────────
+    max_day = p_df["Day"].max().normalize()
+    today_start = max_day
+    yest_start  = max_day - pd.Timedelta(days=1)
+    l3_start    = max_day - pd.Timedelta(days=2)
+
+    day_norm = p_df["Day"].dt.normalize()
+    periods = [
+        ("Today",       p_df[day_norm == today_start]),
+        ("Yesterday",   p_df[day_norm == yest_start]),
+        ("Last 3 Days", p_df[(day_norm >= l3_start) & (day_norm <= today_start)]),
+    ]
+
+    col_order = [
+        "Campaign name", "Spend",
+        "New Lead", "New Lead CPL",
+        "Old Lead", "Old Lead CPL",
+        "Total Lead", "Total Lead CPL",
+    ]
+    fmt = {
+        "Spend":          "₹{:,.0f}",
+        "New Lead":       "{:,.0f}",
+        "New Lead CPL":   "₹{:.1f}",
+        "Old Lead":       "{:,.0f}",
+        "Old Lead CPL":   "₹{:.1f}",
+        "Total Lead":     "{:,.0f}",
+        "Total Lead CPL": "₹{:.1f}",
+    }
+    gradient_cfg = [
+        ("Spend",          "Blues"),
+        ("New Lead",       "RdYlGn"),
+        ("New Lead CPL",   "RdYlGn_r"),
+        ("Old Lead",       "Blues"),
+        ("Old Lead CPL",   "RdYlGn_r"),
+        ("Total Lead",     "RdYlGn"),
+        ("Total Lead CPL", "RdYlGn_r"),
+    ]
+
+    for label, pdf in periods:
+        st.markdown(f"##### 🗓️ {label}")
+        if pdf.empty:
+            st.info(f"No data for {label}.")
+            continue
+
+        agg = (
+            pdf.groupby("Campaign name", dropna=False)
+            .agg(
+                Spend=("Spends", "sum"),
+                **{"New Lead":   ("New Leads DB",   "sum")},
+                **{"Old Lead":   ("Old Leads DB",   "sum")},
+                **{"Total Lead": ("Total Leads DB", "sum")},
+            )
+            .reset_index()
+        )
+        agg["New Lead CPL"]   = (agg["Spend"] / agg["New Lead"].replace(0, np.nan)).round(2)
+        agg["Old Lead CPL"]   = (agg["Spend"] / agg["Old Lead"].replace(0, np.nan)).round(2)
+        agg["Total Lead CPL"] = (agg["Spend"] / agg["Total Lead"].replace(0, np.nan)).round(2)
+        agg = agg.replace([np.inf, -np.inf], np.nan)
+        agg = agg[col_order].sort_values("Spend", ascending=False).reset_index(drop=True)
+
+        # TOTAL row (derived metrics use aggregated sums)
+        t_spend = agg["Spend"].sum()
+        t_new   = agg["New Lead"].sum()
+        t_old   = agg["Old Lead"].sum()
+        t_total = agg["Total Lead"].sum()
+        total_row = {
+            "Campaign name":  "TOTAL",
+            "Spend":          round(t_spend, 2),
+            "New Lead":       round(t_new, 0),
+            "New Lead CPL":   round(t_spend / t_new,   2) if t_new   else np.nan,
+            "Old Lead":       round(t_old, 0),
+            "Old Lead CPL":   round(t_spend / t_old,   2) if t_old   else np.nan,
+            "Total Lead":     round(t_total, 0),
+            "Total Lead CPL": round(t_spend / t_total, 2) if t_total else np.nan,
+        }
+        total_df = pd.DataFrame([total_row])[col_order]
+        total_fmt = {k: v for k, v in fmt.items() if total_row.get(k) not in ("", None)}
+
+        styled_total = (
+            total_df.style
+            .format(total_fmt, na_rep="—")
+            .set_properties(**{
+                "background-color": "#1e3c72",
+                "color": "white",
+                "font-weight": "bold",
+            })
+            .hide(axis="index")
+        )
+        st.dataframe(styled_total, use_container_width=True, hide_index=True)
+
+        styled = agg.style.format(fmt, na_rep="—")
+        for col, cmap in gradient_cfg:
+            if col in agg.columns and agg[col].notna().any():
+                styled = styled.background_gradient(cmap=cmap, subset=[col], axis=0)
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        csv_bytes = (
+            pd.concat([total_df, agg], ignore_index=True)
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
+        st.download_button(
+            label=f"⬇️ Download {label} CSV",
+            data=csv_bytes,
+            file_name=f"campaign_snapshot_{label.lower().replace(' ', '_')}_{tab_key}.csv",
+            mime="text/csv",
+            key=f"pcm_download_{label}_{tab_key}",
+        )
+
+
 # ── Tab renderers ─────────────────────────────────────────────────────────────
 
 def render_tab(tab_name, sheet_url, upload_key):
@@ -1269,6 +1409,7 @@ def render_tab(tab_name, sheet_url, upload_key):
         return
 
     render_kpi_cards(fdf, fdf["Day"].max())
+    render_period_campaign_matrix(fdf, tab_key=upload_key)
     render_charts(fdf)
     render_best_worst(fdf, tab_key=upload_key)
     render_weekly_comparison(fdf, tab_key=upload_key)
@@ -1323,6 +1464,7 @@ def render_combined_tab():
             st.plotly_chart(fig_pie, use_container_width=True)
 
     render_kpi_cards(fdf, fdf["Day"].max())
+    render_period_campaign_matrix(fdf, tab_key="combined")
     render_charts(fdf)
     render_best_worst(fdf, tab_key="combined")
     render_weekly_comparison(fdf, tab_key="combined")
